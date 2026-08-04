@@ -8,13 +8,33 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// Enable CORS for front-end
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
+
 const pool = new Pool({
     user: process.env.DB_USER || 'postgres',
     host: process.env.DB_HOST || 'localhost',
     database: process.env.DB_NAME || 'notas_db',
     password: process.env.DB_PASSWORD || 'postgres',
     port: process.env.DB_PORT || 5432,
+    connectionTimeoutMillis: 2000,
 });
+
+let inMemoryNotas = [
+    { id: 1, aluno: "João Lacerda", disciplina: "DevOps & Docker", nota: 9.5 },
+    { id: 2, aluno: "Maria Clara", disciplina: "Automação CI/CD", nota: 10.0 },
+    { id: 3, aluno: "Lucas Lacerda", disciplina: "Arquitetura Cloud", nota: 8.8 },
+    { id: 4, aluno: "Ana Souza", disciplina: "Banco de Dados", nota: 9.2 }
+];
+let nextId = 5;
 
 const initDB = async () => {
     try {
@@ -28,19 +48,23 @@ const initDB = async () => {
         `);
         console.log('Tabela "notas" inicializada no banco de dados!');
     } catch (err) {
-        console.error('Erro ao inicializar o banco:', err);
+        console.log('PostgreSQL indisponível localmente. Usando banco em memória.');
     }
 };
 
 initDB();
+
+app.get('/status', (req, res) => {
+    res.json({ status: 'API de Notas Node.js rodando com sucesso!' });
+});
 
 app.get('/notas', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM notas ORDER BY id ASC');
         res.json(result.rows);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ mensagem: 'Erro interno no servidor' });
+        // Fallback em memória se PostgreSQL estiver offline
+        res.json(inMemoryNotas);
     }
 });
 
@@ -49,14 +73,13 @@ app.get('/notas/:id', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM notas WHERE id = $1', [id]);
         if (result.rows.length > 0) {
-            res.json(result.rows[0]);
-        } else {
-            res.status(404).json({ mensagem: 'Nota não encontrada' });
+            return res.json(result.rows[0]);
         }
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ mensagem: 'Erro interno no servidor ao buscar nota' });
+        const nota = inMemoryNotas.find(n => n.id === id);
+        if (nota) return res.json(nota);
     }
+    res.status(404).json({ mensagem: 'Nota não encontrada' });
 });
 
 app.post('/notas', async (req, res) => {
@@ -71,10 +94,11 @@ app.post('/notas', async (req, res) => {
             'INSERT INTO notas (aluno, disciplina, nota) VALUES ($1, $2, $3) RETURNING *',
             [aluno, disciplina, nota]
         );
-        res.status(201).json(result.rows[0]);
+        return res.status(201).json(result.rows[0]);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ mensagem: 'Erro interno no servidor ao inserir' });
+        const novaNota = { id: nextId++, aluno, disciplina, nota: parseFloat(nota) };
+        inMemoryNotas.push(novaNota);
+        return res.status(201).json(novaNota);
     }
 });
 
@@ -89,14 +113,16 @@ app.put('/notas/:id', async (req, res) => {
         );
 
         if (result.rows.length > 0) {
-            res.json(result.rows[0]);
-        } else {
-            res.status(404).json({ mensagem: 'Nota não encontrada' });
+            return res.json(result.rows[0]);
         }
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ mensagem: 'Erro interno no servidor ao atualizar' });
+        const index = inMemoryNotas.findIndex(n => n.id === id);
+        if (index !== -1) {
+            inMemoryNotas[index] = { id, aluno, disciplina, nota: parseFloat(nota) };
+            return res.json(inMemoryNotas[index]);
+        }
     }
+    res.status(404).json({ mensagem: 'Nota não encontrada' });
 });
 
 app.delete('/notas/:id', async (req, res) => {
@@ -106,17 +132,20 @@ app.delete('/notas/:id', async (req, res) => {
         const result = await pool.query('DELETE FROM notas WHERE id = $1 RETURNING *', [id]);
 
         if (result.rows.length > 0) {
-            res.json({ mensagem: 'Nota removida com sucesso', nota: result.rows[0] });
-        } else {
-            res.status(404).json({ mensagem: 'Nota não encontrada' });
+            return res.json({ mensagem: 'Nota removida com sucesso', nota: result.rows[0] });
         }
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ mensagem: 'Erro interno no servidor ao deletar' });
+        const index = inMemoryNotas.findIndex(n => n.id === id);
+        if (index !== -1) {
+            const removed = inMemoryNotas.splice(index, 1);
+            return res.json({ mensagem: 'Nota removida com sucesso', nota: removed[0] });
+        }
     }
+    res.status(404).json({ mensagem: 'Nota não encontrada' });
 });
 
 app.listen(port, () => {
     console.log(`API de notas rodando na porta ${port}`);
     console.log(`Acesse: http://localhost:${port}/notas`);
 });
+
